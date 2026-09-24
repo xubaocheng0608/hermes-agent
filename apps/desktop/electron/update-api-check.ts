@@ -31,7 +31,12 @@ export interface CachedUpdateCheck {
 /** `owner/repo` for any GitHub remote form; null for non-GitHub origins. */
 export function githubRepoSlug(originUrl: string): string | null {
   const canonical = canonicalGitHubRemote(originUrl)
-  const match = /^github\.com\/([^/]+\/[^/]+)$/.exec(canonical)
+
+  // Mirror-prefixed remotes (https://gh-proxy.com/https://github.com/owner/repo)
+  // canonicalize to `gh-proxy.com/https:/github.com/owner/repo`, so the match
+  // must not anchor to the string start — the real GitHub path sits after the
+  // proxy host. An unanchored match still rejects non-GitHub origins.
+  const match = /github\.com\/([^/]+\/[^/]+)$/.exec(canonical)
 
   return match ? match[1] : null
 }
