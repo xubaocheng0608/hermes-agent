@@ -78,6 +78,13 @@ test('compare payload maps to the behind count and a newest-first commit list; m
   // Forks and SSH forms hit the API for their own repo; non-GitHub origins don't.
   assert.equal(githubRepoSlug('git@github.com:Someone/hermes-agent.git'), 'someone/hermes-agent')
   assert.equal(githubRepoSlug('https://gitlab.example/x/y.git'), null)
+  // Mirror-prefixed remotes (gh-proxy.com/https://github.com/...) must still
+  // resolve the real slug — the anchored regex read the proxy host as the
+  // origin and silently degraded every check to the ls-remote path.
+  assert.equal(
+    githubRepoSlug('https://gh-proxy.com/https://github.com/NousResearch/hermes-agent.git'),
+    'nousresearch/hermes-agent'
+  )
   assert.equal(
     branchTipApiUrl('nousresearch/hermes-agent', 'bb/gui'),
     'https://api.github.com/repos/nousresearch/hermes-agent/commits/bb%2Fgui'
