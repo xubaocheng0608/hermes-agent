@@ -542,3 +542,70 @@ def test_branch_tip_failure_names_the_cause(installation):
     status = check_for_updates(install_root=root, home=home, force=True)
     assert status["error"] == "fetch-failed"
     assert "HTTP 503" in status["message"]
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://gh-proxy.com/https://github.com/NousResearch/hermes-agent.git", "NousResearch/hermes-agent"),
+    ("https://ghfast.top/https://github.com/fixture/fork", "fixture/fork"),
+    ("https://github.com/fixture/fork.git", "fixture/fork"),
+    ("git@github.com:fixture/fork.git", "fixture/fork"),
+    ("ssh://git@github.com/fixture/fork.git", "fixture/fork"),
+    ("/tmp/pytest-of-root/remote", None),
+    ("C:/Users/x/.hermes/tmp/remote", None),
+    ("https://example.com/repo.git", None),
+])
+def test_mirror_origin_resolves_to_its_github_repository(url, expected):
+    """A mirror/proxy prefix must not hide the repository behind it."""
+    from hermes_cli.source_releases import _GITHUB_ORIGIN
+
+    match = _GITHUB_ORIGIN.fullmatch(url)
+    assert (match[1] if match else None) == expected
+
+
+def test_mirror_origin_counts_commits_behind(installation):
+    """The mirror-prefixed origin still resolves to its GitHub repo, so the gap is
+    counted instead of degrading to "update available, count unknown" (-1)."""
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    git("remote", "set-url", "origin",
+        "https://gh-proxy.com/https://github.com/fixture/fork.git")
+    target = "a" * 40
+    responses["/repos/fixture/fork/commits/main"] = (200, target)
+    responses[f"/repos/fixture/fork/compare/{head}...{target}"] = (200, {"ahead_by": 3, "commits": []})
+    status = check_for_updates(install_root=root, home=home)
+    assert status["behind"] == 3
+    assert status["updateAvailable"] is True
+    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/main",
+                        f"/repos/fixture/fork/compare/{head}...{target}"]
+
+
+def test_local_tracking_ref_counts_without_github_or_fetch(installation, monkeypatch):
+    """With no GitHub repository (a local-only commit, a served mirror), the fresh
+    tip matching the local tracking ref is enough: rev-list counts it, and a
+    passive check still never fetches."""
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    git("checkout", "-q", "-b", "remote-line")
+    git("commit", "-q", "--allow-empty", "-m", "remote one")
+    git("commit", "-q", "--allow-empty", "-m", "remote two")
+    git("push", "-q", "origin", "remote-line:main")
+    git("fetch", "-q", "origin")
+    git("checkout", "-q", "-b", "local-line", head)
+    commands = []
+    original = subprocess.run
+
+    def record(args, **kwargs):
+        commands.append(args)
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", record)
+    status = check_for_updates(install_root=root, home=home, branch="main")
+    assert status["behind"] == 2
+    assert status["targetSha"] == git("rev-parse", "origin/main")
+    # No GitHub compare (and no channel record for an explicit branch): the count
+    # came from the local tracking ref alone.
+    assert requests == []
+    assert not any("fetch" in command for command in commands), commands

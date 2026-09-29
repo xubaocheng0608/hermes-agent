@@ -185,6 +185,68 @@ describe('gateway version refresh', () => {
       window.hermesDesktop = previous
     }
   })
+
+  const versionInfo = (appVersion: string): DesktopVersionInfo => ({
+    appVersion,
+    electronVersion: '40',
+    nodeVersion: '26',
+    platform: 'win32',
+    hermesRoot: ''
+  })
+
+  it('keeps a local reply when the local connection object is replaced mid-flight', async () => {
+    // The boot refresh races the gateway handshake, which hands the renderer a
+    // fresh LOCAL connection object. Discarding on any identity change stranded
+    // the statusbar pill on the bare commit sha for the rest of the session.
+    setRemote(false)
+
+    const version = versionInfo('0.21.5+4496')
+    let finish!: (value: DesktopVersionInfo) => void
+
+    const getVersion = vi.fn(
+      () =>
+        new Promise<DesktopVersionInfo>(resolve => {
+          finish = resolve
+        })
+    )
+
+    const previous = window.hermesDesktop
+
+    window.hermesDesktop = { ...previous, getVersion }
+
+    try {
+      const pending = refreshDesktopVersion()
+      setRemote(false)
+      finish(version)
+      expect(await pending).toEqual(version)
+      expect($desktopVersion.get()?.appVersion).toBe('0.21.5+4496')
+    } finally {
+      window.hermesDesktop = previous
+    }
+  })
+
+  it('retries a version-less reply and never blanks the version it already has', async () => {
+    setRemote(false)
+    $desktopVersion.set(versionInfo('0.21.5+4495'))
+
+    const getVersion = vi.fn().mockResolvedValue({ appVersion: '' })
+    const previous = window.hermesDesktop
+    window.hermesDesktop = { ...previous, getVersion }
+    vi.useFakeTimers()
+
+    try {
+      expect(await refreshDesktopVersion()).toEqual(versionInfo('0.21.5+4495'))
+      expect($desktopVersion.get()?.appVersion).toBe('0.21.5+4495')
+
+      getVersion.mockResolvedValue(versionInfo('0.21.5+4496'))
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(getVersion).toHaveBeenCalledTimes(2)
+      expect($desktopVersion.get()?.appVersion).toBe('0.21.5+4496')
+    } finally {
+      vi.useRealTimers()
+      window.hermesDesktop = previous
+    }
+  })
 })
 
 describe('maybeNotifyUpdateAvailable', () => {

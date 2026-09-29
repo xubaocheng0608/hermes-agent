@@ -455,6 +455,37 @@ export function requestActiveUpdate(): void {
   openUpdateOverlayFor(target)
 }
 
+// A reply that carries no `appVersion` means the backend had not answered yet:
+// the poller runs at first paint, before the local backend finishes booting.
+// The pill then falls back to the bare commit sha, which reads as "the version
+// number disappeared", so retry on a short backoff instead of leaving it there
+// for the rest of the session.
+const VERSION_REFRESH_RETRY_MS = [1500, 5000, 15000]
+let versionRefreshRetries = 0
+let versionRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let versionRefreshWarned = false
+
+function cancelVersionRefreshRetry(): void {
+  if (versionRefreshTimer !== null) {
+    clearTimeout(versionRefreshTimer)
+    versionRefreshTimer = null
+  }
+}
+
+function scheduleVersionRefreshRetry(): void {
+  const delay = VERSION_REFRESH_RETRY_MS[versionRefreshRetries]
+
+  if (delay === undefined || versionRefreshTimer !== null) {
+    return
+  }
+
+  versionRefreshRetries += 1
+  versionRefreshTimer = setTimeout(() => {
+    versionRefreshTimer = null
+    void refreshDesktopVersion()
+  }, delay)
+}
+
 /** Refresh the active gateway version and the desktop's build metadata. */
 export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null> {
   if (typeof window === 'undefined') {
@@ -465,22 +496,56 @@ export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null
   // focus handler) all kick this off with `void refreshDesktopVersion()`,
   // so any rejection from the IPC bridge (e.g. main process shutting down
   // mid-reload, or the bridge not yet ready on first paint) would surface
-  // as an unhandled promise rejection in the renderer. Swallow it.
+  // as an unhandled promise rejection in the renderer. Swallow it — but leave
+  // a breadcrumb, because a silent empty reply is exactly why "the statusbar
+  // lost its version number" leaves no trace in desktop.log.
   try {
     const connection = $connection.get()
     const next = await window.hermesDesktop?.getVersion?.({ ...connectionScoped(), ...profileScoped() })
+    const current = $connection.get()
 
-    if ($connection.get() !== connection) {
+    // A REMOTE reply belongs to the connection that was active when the call
+    // started: switching hosts must not paint the previous one's version. The
+    // LOCAL connection object is recreated while the gateway handshake settles,
+    // so discarding on any identity change stranded the pill on the commit sha
+    // for the whole session whenever the boot refresh raced the connect.
+    const switched = current !== connection
+
+    if (switched && (current?.mode === 'remote' || connection?.mode === 'remote')) {
       return null
     }
 
-    if (next) {
+    if (next?.appVersion) {
+      versionRefreshRetries = 0
+      versionRefreshWarned = false
+      cancelVersionRefreshRetry()
       $desktopVersion.set(next)
+
+      return next
     }
 
-    return next ?? null
-  } catch {
-    return null
+    if (!versionRefreshWarned) {
+      versionRefreshWarned = true
+      // Renderer console lines are captured into desktop.log.
+      console.warn(
+        '[version] the desktop bridge returned no appVersion (backend not reachable yet?); keeping the last known version and retrying'
+      )
+    }
+
+    scheduleVersionRefreshRetry()
+
+    // Never blank a version we already have: a reply from the previous
+    // handshake still beats the bare sha.
+    return $desktopVersion.get() ?? null
+  } catch (error) {
+    if (!versionRefreshWarned) {
+      versionRefreshWarned = true
+      console.warn('[version] refreshDesktopVersion failed; retrying', error)
+    }
+
+    scheduleVersionRefreshRetry()
+
+    return $desktopVersion.get() ?? null
   }
 }
 
@@ -1257,6 +1322,7 @@ export function stopUpdatePoller(): void {
   connectionUnsub?.()
   connectionUnsub = null
   lastConnectionKey = undefined
+  cancelVersionRefreshRetry()
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }

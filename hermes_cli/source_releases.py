@@ -16,7 +16,13 @@ logger = logging.getLogger(__name__)
 _PUBLIC_BASE = "https://hermes-assets.nousresearch.com"
 OFFICIAL_REPOSITORY = "NousResearch/hermes-agent"
 _GITHUB_ORIGIN = re.compile(
-    r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+    # Mirrors and proxies front the same repository: `gh-proxy.com`, `ghfast.top`
+    # and friends hand out `https://<mirror>/https://github.com/o/r.git`. The
+    # mirror prefix used to fail this match, which dropped `repository` to None
+    # and silently took the "behind but uncountable" path — the statusbar then
+    # shows "(update)" instead of "(+N)". Allow one scheme://host/ prefix.
+    r"^(?:[A-Za-z][A-Za-z0-9+.\-]*://[^/\s]+/)?"
+    r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
     r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$", re.IGNORECASE,
 )
 _SHA = re.compile(r"[0-9a-f]{40}")

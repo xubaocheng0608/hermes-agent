@@ -329,7 +329,27 @@ def _unhealable_reason(co: _Checkout, branch: str) -> Optional[str]:
     return "unmerged"  # Unknown merge state keeps the branch.
 
 
-def _behind_count(co: _Checkout, target: str) -> tuple[int, list[dict]]:
+def _local_behind_count(co: _Checkout, target: str, branch: str, remote: str) -> Optional[int]:
+    """Count from the local remote-tracking ref — exact, and no fetch.
+
+    The compare API is blind to a commit that exists only in this checkout (the
+    everyday local-commit case: GitHub 404s the comparison and the count degrades
+    to "update available, count unknown"), and it stops answering entirely while
+    rate limited. When the local ref for the freshly resolved tip points at
+    exactly that tip, ``rev-list`` measures the same distance with no network at
+    all — and without fetching, which a passive check must never do.
+    """
+    if co.embedded or not branch or not remote or "://" in remote:
+        return None
+    ref = _git_stdout(["rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/{branch}"],
+                      cwd=co.root, git=co.git)
+    if ref is None or ref.lower() != target.lower():
+        return None
+    return _git_count(["rev-list", "--count", f"{co.head}..{ref}"], cwd=co.root)
+
+
+def _behind_count(co: _Checkout, target: str, *, branch: Optional[str] = None,
+                  remote: Optional[str] = None) -> tuple[int, list[dict]]:
     """``(behind, commits)`` for ``target``: local ancestry first, then the GitHub compare API."""
     if co.head == target or (not co.embedded and _git_ok(
             ["merge-base", "--is-ancestor", target, co.head], cwd=co.root, git=co.git)):
@@ -339,6 +359,9 @@ def _behind_count(co: _Checkout, target: str) -> tuple[int, list[dict]]:
         ahead = (payload or {}).get("ahead_by")
         if isinstance(ahead, int) and not isinstance(ahead, bool) and ahead >= 0:
             return ahead, (_quiet(lambda: _commits(payload), []) if ahead else [])
+    count = _local_behind_count(co, target, branch or "", remote or "")
+    if count is not None:
+        return count, []
     return UPDATE_AVAILABLE_NO_COUNT, []
 
 
@@ -347,6 +370,8 @@ def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
     """Compare the checkout with ``selected_branch``'s remote tip, falling back to main if it was deleted."""
     result["branch"] = selected_branch
     remote = _branch_remote(co, selected_branch)
+    count_branch = selected_branch
+    count_remote = remote
     target, missing, failure = _branch_tip(co.repository, selected_branch, co.root, co.git, remote)
     reason = _unhealable_reason(co, selected_branch) if missing and selected_branch != "main" else None
     if reason:
@@ -357,15 +382,17 @@ def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
         return
     if missing and selected_branch != "main":
         result["branch"] = "main"
+        count_branch = "main"
         if heal:
             _heal_deleted_branch(*heal)
-        target, _, failure = _branch_tip(co.repository, "main", co.root, co.git, remote if co.embedded else "origin")
+        count_remote = remote if co.embedded else "origin"
+        target, _, failure = _branch_tip(co.repository, "main", co.root, co.git, count_remote)
     if target is None:
         result.update(error="fetch-failed",
                       message=f"Could not resolve the remote branch tip: {failure}" if failure
                       else "Could not resolve the remote branch tip.")
         return
-    behind, commits = _behind_count(co, target)
+    behind, commits = _behind_count(co, target, branch=count_branch, remote=count_remote)
     result["commits"] = commits
     result.update(targetSha=target, behind=behind, updateAvailable=behind != 0)
 

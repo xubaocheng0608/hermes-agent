@@ -18176,6 +18176,38 @@ function resolveHermesVersion(scope: { connectionId?: string; profile?: string }
   return resolveGatewayVersion(path => handleHermesApiRequest({ ...scope, path, timeoutMs: 5000 }))
 }
 
+// The renderer asks for the version on its first paint, which can land before
+// the local backend has finished booting. `resolveGatewayVersion` swallows that
+// transport failure by design (an offline gateway has no known version), and an
+// empty answer makes the statusbar pill fall back to the bare commit sha — it
+// reads as "the version number disappeared". Retry here, the layer that owns the
+// backend lifecycle, and log when even the retries come back empty: the silent
+// renderer path is why this was unreproducible from desktop.log.
+const VERSION_RESOLVE_ATTEMPTS = 3
+const VERSION_RESOLVE_RETRY_MS = 2000
+
+async function resolveHermesVersionWithRetry(
+  scope: { connectionId?: string; profile?: string } = {}
+): Promise<string> {
+  for (let attempt = 1; attempt <= VERSION_RESOLVE_ATTEMPTS; attempt += 1) {
+    const version = await resolveHermesVersion(scope)
+
+    if (version) {
+      return version
+    }
+
+    if (attempt < VERSION_RESOLVE_ATTEMPTS) {
+      await sleep(VERSION_RESOLVE_RETRY_MS)
+    }
+  }
+
+  rememberLog(
+    `[version] the Hermes backend reported no displayVersion after ${VERSION_RESOLVE_ATTEMPTS} attempts; the statusbar pill will show the commit sha`
+  )
+
+  return ''
+}
+
 // Renderer-bundle skew: `hermes update` moves the SOURCE TREE, but the UI
 // (including bundled plugins like Bot Mode) is compiled into this binary at
 // build time. A terminal-side update — or an in-app update whose bundle-swap
@@ -18209,7 +18241,7 @@ function showAboutPanelFresh(): void {
 }
 
 ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string; profile?: string }) => {
-  const [skew, version] = await Promise.all([detectRendererSkew(), resolveHermesVersion(scope)])
+  const [skew, version] = await Promise.all([detectRendererSkew(), resolveHermesVersionWithRetry(scope)])
 
   return {
     ...appVersionInfo(INSTALL_STAMP, version, app.getVersion()),
