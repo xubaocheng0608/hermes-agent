@@ -492,7 +492,11 @@ def test_official_ssh_healing_uses_public_https_without_retargeting_forks(instal
     from hermes_cli.source_check import check_for_updates
     root, linked, home, base, head, responses, requests, git = installation
     git("remote", "set-url", "origin", f"git@github.com:{repository}.git")
-    git("config", f"url.{root.as_uri()}.insteadOf", "https://github.com/NousResearch/hermes-agent.git")
+    # A `file:///C:/...` URI (``Path.as_uri()``) is not a usable insteadOf target on
+    # Windows: git reads the path as `/C:/...` and cannot find the repository, so the
+    # simulated remote never resolves and no branch tip is ever advertised. A plain
+    # path works on every platform.
+    git("config", f"url.{root.as_posix()}.insteadOf", "https://github.com/NousResearch/hermes-agent.git")
     monkeypatch.setenv("GIT_SSH_COMMAND", "false")
     branch_file = home / "desktop-update.json"
     branch_file.write_text(json.dumps({"branch": "deleted"}))
