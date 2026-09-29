@@ -18186,9 +18186,7 @@ function resolveHermesVersion(scope: { connectionId?: string; profile?: string }
 const VERSION_RESOLVE_ATTEMPTS = 3
 const VERSION_RESOLVE_RETRY_MS = 2000
 
-async function resolveHermesVersionWithRetry(
-  scope: { connectionId?: string; profile?: string } = {}
-): Promise<string> {
+async function resolveHermesVersionWithRetry(scope: { connectionId?: string; profile?: string } = {}): Promise<string> {
   for (let attempt = 1; attempt <= VERSION_RESOLVE_ATTEMPTS; attempt += 1) {
     const version = await resolveHermesVersion(scope)
 
