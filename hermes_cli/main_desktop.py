@@ -1404,9 +1404,14 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
     if sys.platform == "win32":
         # The installer stages pinned Git in its own PowerShell process. Product
         # builds run later, often with every system git removed from PATH; the
-        # desktop stamp must still resolve this checkout's real HEAD.
-        import pm
-        build_env = pm.ensure("git", base_env=build_env).env
+        # desktop stamp must still resolve this checkout's real HEAD. An update
+        # is an explicit user action, so PM's pinned git is preferred — but when
+        # it cannot be acquired (lazy installs off, a blocked download, or a
+        # store copy PM never recorded in its facts) the ambient git still
+        # resolves HEAD, and losing the entire update over that is not worth it.
+        from hermes_cli._subprocess_compat import selected_git_env
+
+        build_env = selected_git_env(build_env)
     if _force_adhoc_macos_signing(build_env, source_mode=source_mode):
         print("  → No Developer ID configured; ad-hoc signing this local rebuild "
               "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
